@@ -19,6 +19,21 @@ function edgePoint(el, side){
 
 function cablePath(from, to, index, kind){
   const [x0,y0] = from, [x1,y1] = to;
+  if(kind === 'hook'){
+    /* out of the pixel jack: down, sweep right, round the far-right corner,
+       descend, then come back in horizontally to the pedal's right edge */
+    const W = document.documentElement.scrollWidth;
+    const rightX = Math.min(W - 70, Math.max(x0, x1) + 560);
+    const topY  = y0 + Math.max((y1 - y0) * .07, 56);
+    const flatX = x0 + Math.min((rightX - x0) * .38, 340);
+    const cornY = topY + (y1 - topY) * .48;
+    return [
+      `M ${x0} ${y0}`,
+      `C ${x0+96} ${y0-12}, ${flatX-170} ${topY}, ${flatX} ${topY}`,
+      `C ${flatX+180} ${topY}, ${rightX} ${Math.max(cornY-170, topY+24)}, ${rightX} ${cornY}`,
+      `C ${rightX} ${Math.min(cornY+180, y1-24)}, ${x1+190} ${y1}, ${x1} ${y1}`
+    ].join(' ');
+  }
   if(kind === 'loop'){
     const dx = x1 - x0;
     const dy = y1 - y0;
@@ -48,9 +63,9 @@ function cablePath(from, to, index, kind){
     return [
       `M ${x0} ${y0}`,
       `C ${x0-36} ${y0+38}, ${tuckX-92} ${tuckY-24}, ${tuckX-34} ${tuckY}`,
-      `C ${bellyX+80} ${tuckY+24}, ${bellyX+92} ${bellyY-86}, ${bellyX+10} ${bellyY}`,
-      `C ${bellyX-54} ${bellyY+62}, ${shelfX-32} ${shelfY-8}, ${shelfX-76} ${shelfY}`,
-      `C ${shelfX-118} ${shelfY+16}, ${x1+54} ${y1-24}, ${x1} ${y1}`
+      `S ${bellyX+92} ${bellyY-86}, ${bellyX+10} ${bellyY}`,
+      `S ${shelfX-32} ${shelfY-8}, ${shelfX-76} ${shelfY}`,
+      `S ${x1+54} ${y1-24}, ${x1} ${y1}`
     ].join(' ');
   }
 
@@ -82,14 +97,15 @@ function buildCable(){
 
   const runs = pedals.map((el, i)=>{
     const prev = i ? pageXY(pedals[i-1], .5, .52) : figureTail;
-    const entrySide = edgeSide(el, prev);
+    let entrySide = edgeSide(el, prev);
+    if(i === 0 && innerWidth >= 900) entrySide = 'right';  // hook run re-enters from the right
     const exitSide = entrySide === 'left' ? 'right' : 'left';
     return { el, entry: edgePoint(el, entrySide), exit: edgePoint(el, exitSide) };
   });
 
   const links = [];
   if(runs.length){
-    links.push({ from: figureTail, to: runs[0].entry });
+    links.push({ from: figureTail, to: runs[0].entry, kind: innerWidth >= 900 ? 'hook' : undefined });
     for(let i=0;i<runs.length-1;i++){
       if(i === 0 && innerWidth >= 900){
         links.push({
@@ -111,20 +127,21 @@ function buildCable(){
   }
 
   let offset = 0;
-  links.forEach(({ from, to, kind }, i)=>{
-    const d = cablePath(from, to, i, kind);
-    const base = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    const live = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    [base, live].forEach(path=>{
-      path.setAttribute('d', d);
-      path.setAttribute('fill', 'none');
-      path.setAttribute('stroke-linecap', 'round');
-    });
-    base.setAttribute('stroke', 'rgba(26,26,26,.14)');
-    base.setAttribute('stroke-width', '7');
+  const NS = 'http://www.w3.org/2000/svg';
+  function addSeg(d, w, withShadow = true){
+    const live = document.createElementNS(NS, 'path');
+    live.setAttribute('d', d);
+    live.setAttribute('fill', 'none');
+    live.setAttribute('stroke-linecap', 'round');
+    live.setAttribute('stroke-linejoin', 'round');
     live.setAttribute('stroke', 'var(--cable)');
-    live.setAttribute('stroke-width', '5');
-    shadow.appendChild(base);
+    live.setAttribute('stroke-width', w);
+    if(withShadow){
+      const base = live.cloneNode();
+      base.setAttribute('stroke', 'rgba(26,26,26,.14)');
+      base.setAttribute('stroke-width', w + 2);
+      shadow.appendChild(base);
+    }
     cable.appendChild(live);
 
     const len = live.getTotalLength();
@@ -134,6 +151,31 @@ function buildCable(){
       samples.push([offset+s, live.getPointAtLength(s).y]);
     }
     offset += len;
+  }
+
+  links.forEach(({ from, to, kind }, i)=>{
+    const d = cablePath(from, to, i, kind);
+    if(i === 0){
+      /* first run leaves the pixel-art cable: taper from ~2px up to 5px
+         so the printed cable and the SVG cable read as one line */
+      const probe = document.createElementNS(NS, 'path');
+      probe.setAttribute('d', d);
+      svg.appendChild(probe);
+      const L = probe.getTotalLength();
+      const pt = s => probe.getPointAtLength(Math.min(Math.max(s, 0), L));
+      const poly = (a, b)=>{
+        let out = `M ${pt(a).x} ${pt(a).y}`;
+        for(let s = a + 6; s < b; s += 6) out += ` L ${pt(s).x} ${pt(s).y}`;
+        return out + ` L ${pt(b).x} ${pt(b).y}`;
+      };
+      const taper = [[2.2, 18], [3, 18], [3.8, 18], [4.6, 18]];
+      let s0 = 0;
+      taper.forEach(([w, segLen])=>{ addSeg(poly(s0, s0 + segLen), w, false); s0 += segLen; });
+      addSeg(poly(s0, L), 5);
+      probe.remove();
+    } else {
+      addSeg(d, 5);
+    }
   });
   const total = segments.reduce((sum, seg)=>sum+seg.len, 0);
   if(segments.length) samples.push([total, segments[segments.length-1].path.getPointAtLength(segments[segments.length-1].len).y]);
@@ -191,9 +233,3 @@ document.querySelectorAll('.pedal').forEach(pd=>{
     });
   });
 });
-
-/* reveal cards */
-const io = new IntersectionObserver(es=>{
-  es.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('show'); io.unobserve(e.target); } });
-},{threshold:.15});
-document.querySelectorAll('.rv').forEach(el=>io.observe(el));
